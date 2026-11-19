@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
@@ -473,7 +474,10 @@ app.get('/api/admin/agents/:phone/docs/:kind', admin, async (req, res) => {
 });
 
 /* ------------------------------ static + errors ------------------------------ */
-// On Vercel the website (public/) is served by Vercel itself. Locally this server serves it.
+// The website is served by this app on every host. Reading it with new URL(..., import.meta.url)
+// lets Vercel's bundler include public/index.html in the function.
+const INDEX_HTML = fs.readFileSync(new URL('../public/index.html', import.meta.url));
+app.get(['/', '/index.html'], (_req, res) => res.type('html').set('Cache-Control', 'no-cache').send(INDEX_HTML));
 if (!process.env.VERCEL) {
   const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
   app.use(express.static(PUBLIC));
