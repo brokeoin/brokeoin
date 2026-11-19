@@ -1408,10 +1408,10 @@ async function adminView(){
     return;
   }
   if(!$('.dash.admin'))loadingView();
-  let agents,stats;
-  try{[agents,stats]=await Promise.all([api('GET','/admin/agents'),api('GET','/admin/stats')])}catch(e){if(live(t))fail(e);return}
+  let agents,stats,props,users;
+  try{[agents,stats,props,users]=await Promise.all([api('GET','/admin/agents'),api('GET','/admin/stats'),api('GET','/admin/properties'),api('GET','/admin/users')])}catch(e){if(live(t))fail(e);return}
   if(!live(t))return;
-  D.agents=agents;
+  D.agents=agents;D.adminProps=props;D.users=users;
   const pending=agents.filter(a=>a.status==='pending_docs'||a.status==='pending_inspection');
   $('#app').innerHTML=`<section class="dash admin">
     ${banner('shield','Admin','Verification desk','<span>Approve agents after a document check (RERA) or an office inspection (non-RERA).</span>')}
@@ -1422,11 +1422,58 @@ async function adminView(){
       <div class="stat"><small>${ic('home')} Active listings</small><b>${stats.activeListings}</b></div>
       <div class="stat"><small>${ic('award')} Properties sold</small><b>${stats.soldProperties}</b></div>
     </div>
-    ${tabsHTML([['pending','Pending',pending.length],['all','All agents',agents.length]],state.adminTab)}
+    ${tabsHTML([['pending','Pending',pending.length],['all','All agents',agents.length],['listings','Listings',props.length],['users','Users',users.length]],state.adminTab)}
     <div id="tab-body"></div></div></section>`;
-  const show=tb=>{state.adminTab=tb;setActiveTab(tb);const list=tb==='pending'?pending:agents;
+  const show=tb=>{state.adminTab=tb;setActiveTab(tb);
+    if(tb==='users'){
+      $('#tab-body').innerHTML=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"><input class="in" id="usearch" placeholder="Search by name, phone, email or city" style="flex:1;min-width:220px"><button class="btn btn-ghost sm" id="ucsv">Download CSV</button></div><div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:15px"><thead><tr style="text-align:left"><th style="padding:8px">Type</th><th style="padding:8px">Phone</th><th style="padding:8px">Name</th><th style="padding:8px">Email</th><th style="padding:8px">Details</th><th style="padding:8px">Joined</th></tr></thead><tbody id="ubody"></tbody></table></div>`;
+      const match=()=>{const k=$('#usearch').value.trim().toLowerCase();return users.filter(u=>!k||[u.name,u.phone,u.email,u.city,u.agency].join(' ').toLowerCase().includes(k))};
+      const detail=u=>u.role==='owner'?`${u.listings} listing${u.listings==1?'':'s'}`:`${u.status.replace('_',' ')}${u.city?', '+u.city:''}`;
+      const fill=()=>{const l=match();$('#ubody').innerHTML=l.length?l.map(u=>`<tr style="border-top:1px solid var(--line)"><td style="padding:10px 8px">${u.role==='owner'?'Owner':'Agent'}</td><td style="padding:10px 8px">${fmtPh(u.phone)}</td><td style="padding:10px 8px">${esc(u.name||'—')}</td><td style="padding:10px 8px">${esc(u.email||'—')}</td><td style="padding:10px 8px">${esc(detail(u))}</td><td style="padding:10px 8px">${fmtDate(u.joinedAt)}</td></tr>`).join(''):`<tr><td colspan="6" style="padding:18px 8px">No users found.</td></tr>`};
+      const cell=v=>{v=String(v??'');if(/^[=+\-@]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"'};
+      $('#ucsv').onclick=()=>{const rows=[['Type','Phone','Name','Email','Agency','City','Status/Listings','Joined']].concat(match().map(u=>[u.role,u.phone,u.name,u.email,u.agency||'',u.city||'',u.role==='owner'?u.listings:u.status,new Date(u.joinedAt).toISOString().slice(0,10)]));
+        const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(cell).join(',')).join('\n')],{type:'text/csv'}));a.download='brokeo-users.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+      $('#usearch').oninput=fill;fill();return;
+    }
+    if(tb==='listings'){
+      $('#tab-body').innerHTML=`<input class="in" id="lsearch" placeholder="Search by title, seller name, phone or city" style="margin-bottom:16px"><div id="llist"></div>`;
+      const fill=()=>{const k=$('#lsearch').value.trim().toLowerCase();
+        const l=props.filter(p=>!k||[p.title,p.city,p.locality,p.owner.name,p.owner.phone,p.contact.name,p.contact.phone].join(' ').toLowerCase().includes(k));
+        $('#llist').innerHTML=l.length?l.map(adminListing).join(''):emptyBox('home','No listings found',k?'Try a different search.':'Owner listings appear here once they are published.')};
+      $('#lsearch').oninput=fill;fill();return;
+    }
+    const list=tb==='pending'?pending:agents;
     $('#tab-body').innerHTML=list.length?list.map(a=>adminCard(a)).join(''):emptyBox('shield',tb==='pending'?'Nothing to verify':'No agents yet',tb==='pending'?'Every agent application has been processed.':'Agents appear here after they submit KYC.')};
   bindTabs(show);show(state.adminTab);
+}
+function adminListing(p){
+  const sold=p.status==='sold';
+  return`<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+      <div><h3 style="font-size:21px">${esc(p.title)}</h3><p class="row-sub">${esc(p.type)}${p.bhk&&p.bhk!=='—'?', '+esc(p.bhk):''}. ${esc(p.locality)}, ${esc(p.city)} ${esc(p.pincode)}. Listed ${fmtDate(p.createdAt)}.</p></div>
+      <div><span class="badge ${sold?'info':'ok'}">${sold?'Sold':'Active'}</span></div>
+    </div>
+    <div class="kv">
+      <div><small>Seller name</small><b>${esc(p.owner.name||'—')}</b></div>
+      <div><small>Seller login number</small><b>${fmtPh(p.owner.phone)}</b></div>
+      <div><small>Seller email</small><b>${esc(p.owner.email||'—')}</b></div>
+      <div><small>Contact on listing</small><b>${esc(p.contact.name)}, ${fmtPh(p.contact.phone)}</b></div>
+      ${p.contact.alt?`<div><small>Alternate number</small><b>${fmtPh(p.contact.alt)}</b></div>`:''}
+      ${p.contact.email?`<div><small>Listing email</small><b>${esc(p.contact.email)}</b></div>`:''}
+      <div><small>Price</small><b>${short(p.price)}</b></div>
+      <div><small>Commission</small><b>${commLabel(p)}</b></div>
+      <div style="grid-column:span 2"><small>Address</small><b>${esc(p.address)}</b></div>
+      <div><small>Buyer requests</small><b>${p.agents.length}</b></div>
+    </div>
+    ${p.agents.length?`<p class="row-sub" style="margin-top:12px">Agents interested: ${p.agents.map(a=>esc(a.name)+' ('+fmtPh(a.phone)+')'+(a.status==='closed'?', sold via this agent':'')).join('; ')}</p>`:''}
+    <div class="pactions"><a class="btn btn-ghost sm" target="_blank" rel="noopener" href="${mapsUrl(p.lat,p.lng)}">${ic('pin')} On map</a>
+      <button class="btn btn-danger sm" onclick="removeListing('${p.id}')">Delete listing</button></div>
+  </div>`;
+}
+function removeListing(id){
+  if(!adminOnly())return;
+  const p=(D.adminProps||[]).find(x=>x.id===id);
+  confirmBox('Delete this listing?',`"${esc(p?.title)}" will be removed for the owner and all agents. This cannot be undone.`,'Delete',async()=>{try{await api('DELETE','/admin/properties/'+id);toast('Listing deleted');adminView()}catch(e){fail(e)}},true);
 }
 function adminCard(a){
   const pend=a.status==='pending_docs'||a.status==='pending_inspection';
