@@ -94,7 +94,7 @@ app.post('/api/auth/otp/request', limiter(15 * 60_000, 10), async (req, res) => 
            ON CONFLICT (phone, role) DO UPDATE SET code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at, tries=0, sent_at=EXCLUDED.sent_at`,
     [phone, role, hashOtp(role, phone, code), now() + 5 * 60_000, now()]);
   try {
-    await sendSms(phone, `Your Brokeo OTP is ${code}. It is valid for 5 minutes. Do not share it with anyone.`);
+    await sendSms(phone, `Your Brokeo OTP is ${code}. It is valid for 5 minutes. Do not share it with anyone.`, { otp: code });
   } catch (e) {
     console.error('OTP SMS failed:', e.message);
     await q('DELETE FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
@@ -461,6 +461,42 @@ app.post('/api/admin/agents/:phone/revoke', admin, async (req, res) => {
   if (a.status !== 'approved') throw httpError(409, 'This agent is not approved');
   await q("UPDATE agents SET status='rejected', note='Access revoked by the Brokeo team. Contact support.' WHERE phone=$1", [a.phone]);
   res.json(await agentOut(a.phone));
+});
+
+/** Everyone who has registered (logged in at least once), owners and agents together. */
+app.get('/api/admin/users', admin, async (_req, res) => {
+  const owners = await q(`SELECT o.phone, o.name, o.email, o.created_at,
+      (SELECT COUNT(*) FROM properties p WHERE p.owner_phone = o.phone) AS listings FROM owners o`);
+  const agents = await q('SELECT phone, name, email, agency, city, status, created_at FROM agents');
+  res.json([
+    ...owners.map(o => ({ role: 'owner', phone: o.phone, name: o.name || '', email: o.email || '', joinedAt: o.created_at, listings: o.listings })),
+    ...agents.map(a => ({ role: 'agent', phone: a.phone, name: a.name || '', email: a.email || '', agency: a.agency || '', city: a.city || '', status: a.status, joinedAt: a.created_at }))
+  ].sort((a, b) => b.joinedAt - a.joinedAt));
+});
+
+/** Every listing with its seller and the agents who have sent a buyer request. */
+app.get('/api/admin/properties', admin, async (_req, res) => {
+  const rows = await q(`SELECT p.*, o.name AS owner_name, o.email AS owner_email
+      FROM properties p LEFT JOIN owners o ON o.phone = p.owner_phone ORDER BY p.created_at DESC`);
+  const leads = await q(`SELECT l.property_id, l.status, a.name, a.phone, a.agency
+      FROM leads l JOIN agents a ON a.phone = l.agent_phone WHERE l.status != 'removed' ORDER BY l.created_at`);
+  res.json(rows.map(r => ({
+    ...propOut(r),
+    owner: { name: r.owner_name || '', email: r.owner_email || '', phone: r.owner_phone },
+    agents: leads.filter(l => l.property_id === r.id).map(l => ({ name: l.name, phone: l.phone, agency: l.agency, status: l.status }))
+  })));
+});
+
+/** Moderation: remove a listing (e.g. spam or a fake listing). */
+app.delete('/api/admin/properties/:id', admin, async (req, res) => {
+  const p = await one('SELECT * FROM properties WHERE id=$1', [req.params.id]);
+  if (!p) throw httpError(404, 'Listing not found');
+  await tx(async c => {
+    await c.query("UPDATE leads SET status='removed' WHERE property_id=$1", [p.id]);
+    await c.query('DELETE FROM properties WHERE id=$1', [p.id]);
+  });
+  for (const n of JSON.parse(p.photos)) await removeFile(n, 'photo');
+  res.json({ ok: true });
 });
 
 /** KYC documents are never public; only a logged-in admin can open them, and nothing is cached. */
