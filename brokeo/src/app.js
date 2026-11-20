@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
 import { q, one, scalar, tx, ensureSchema } from './db.js';
 import { saveDataUrl, removeFile, isDataUrl, httpError } from './files.js';
-import { sendSms } from './sms.js';
+import { OAuth2Client } from 'google-auth-library';
+import { sendWhatsAppOtp, otpChannel } from './whatsapp.js';
 
 /* ------------------------------ config ------------------------------ */
 const PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
@@ -19,7 +20,10 @@ const JWT_SECRET = process.env.JWT_SECRET || '';
 if (JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be set (32+ characters).');
 const ADMIN_HASH = process.env.ADMIN_PASSWORD_HASH || '';
 if (PROD && !ADMIN_HASH) console.error('WARNING: ADMIN_PASSWORD_HASH is not set, so nobody can log in to the verification desk.');
-if (PROD && (process.env.SMS_PROVIDER || 'console') === 'console') console.error('WARNING: SMS_PROVIDER is "console": OTPs are only written to the server log and no SMS is sent. Set SMS_PROVIDER=twilio for real users.');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+if (PROD && !GOOGLE_CLIENT_ID) console.error('WARNING: GOOGLE_CLIENT_ID is not set, so nobody can log in with Google.');
+if (PROD && otpChannel() === 'console') console.error('WARNING: OTP_CHANNEL is "console": OTPs are only written to the server log and nothing is sent on WhatsApp. Set OTP_CHANNEL=whatsapp for real users.');
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 const PHONE = /^[6-9]\d{9}$/;
 const TYPES = ['Apartment / Flat', 'Independent House', 'Villa', 'Plot / Land', 'Commercial Space', 'Farm Land'];
@@ -30,16 +34,19 @@ const uid = () => crypto.randomUUID();
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet({
+  // Google's sign-in button opens a popup; the default "same-origin" policy would block it from talking back to the page.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],            // the frontend is a single file with inline JS
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/client'],   // the frontend is a single file with inline JS
       scriptSrcAttr: ["'unsafe-inline'"],                  // ...and inline onclick="" handlers
       upgradeInsecureRequests: PROD ? [] : null,
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://accounts.google.com/gsi/style'],
+      frameSrc: ['https://accounts.google.com/gsi/'],
       fontSrc: ['https://fonts.gstatic.com'],
-      imgSrc: ["'self'", 'data:', 'blob:', 'https://*.tile.openstreetmap.org'],
-      connectSrc: ["'self'"]
+      imgSrc: ["'self'", 'data:', 'blob:', 'https://*.tile.openstreetmap.org', 'https://*.googleusercontent.com'],
+      connectSrc: ["'self'", 'https://accounts.google.com/gsi/']
     }
   }
 }));
@@ -84,27 +91,75 @@ async function approvedAgent(req, _res, next) {
 }
 
 const hashOtp = (role, phone, code) => crypto.createHmac('sha256', JWT_SECRET).update(`${role}:${phone}:${code}`).digest('hex');
+const session = (role, phone) => sign({ role, phone }, '14d');
 
-app.post('/api/auth/otp/request', limiter(15 * 60_000, 10), async (req, res) => {
-  const { role, phone } = z.object({ role: z.enum(['owner', 'agent']), phone: z.string().regex(PHONE) }).parse(req.body);
-  const prev = await one('SELECT sent_at FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
-  if (prev && now() - prev.sent_at < 30_000) throw httpError(429, 'Please wait 30 seconds before requesting another OTP');
-  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  await q(`INSERT INTO otps (phone, role, code_hash, expires_at, tries, sent_at) VALUES ($1,$2,$3,$4,0,$5)
-           ON CONFLICT (phone, role) DO UPDATE SET code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at, tries=0, sent_at=EXCLUDED.sent_at`,
-    [phone, role, hashOtp(role, phone, code), now() + 5 * 60_000, now()]);
+// Public settings the website needs (the Google client id is not a secret).
+app.get('/api/config', (_req, res) => res.json({ googleClientId: GOOGLE_CLIENT_ID }));
+
+/** Checks a Google ID token ("credential") and returns the verified Google identity. */
+async function verifyGoogle(credential) {
+  if (!googleClient) throw httpError(503, 'Google login is not set up yet');
   try {
-    await sendSms(phone, `Your Brokeo OTP is ${code}. It is valid for 5 minutes. Do not share it with anyone.`, { otp: code });
-  } catch (e) {
-    console.error('OTP SMS failed:', e.message);
-    await q('DELETE FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
-    throw httpError(502, 'We could not send the OTP right now. Please try again in a moment.');
-  }
-  res.json({ ok: true });
+    const t = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+    const p = t.getPayload();
+    if (!p?.sub || !p.email || !p.email_verified) throw 0;
+    return { sub: p.sub, email: p.email.toLowerCase(), name: p.name || '' };
+  } catch { throw httpError(401, 'Google sign-in failed. Please try again.'); }
+}
+
+/** Step 1 of first-time signup: proves "this browser holds a valid Google login" for 15 minutes. */
+const signupToken = (role, g) => sign({ typ: 'signup', role, sub: g.sub, email: g.email, name: g.name }, '15m');
+function signupCtx(req, _res, next) {
+  try {
+    const p = jwt.verify(String(req.body?.signupToken || ''), JWT_SECRET);
+    if (p.typ !== 'signup') throw 0;
+    req.signup = p;
+    next();
+  } catch { next(httpError(401, 'Your Google sign-in expired. Please sign in with Google again.')); }
+}
+
+/**
+ * Google sign-in.
+ *  - Known Google account  -> logged in straight away (no mobile OTP).
+ *  - New Google account    -> { needsPhone: true }: the person must verify a mobile number once on WhatsApp.
+ */
+app.post('/api/auth/google', limiter(15 * 60_000, 40), async (req, res) => {
+  const { role, credential } = z.object({ role: z.enum(['owner', 'agent']), credential: z.string().min(20).max(4000) }).parse(req.body);
+  const g = await verifyGoogle(credential);
+  const id = await one('SELECT phone FROM identities WHERE google_sub=$1 AND role=$2', [g.sub, role]);
+  if (!id) return res.json({ needsPhone: true, signupToken: signupToken(role, g), email: g.email, name: g.name });
+  await q('UPDATE identities SET email=$1, last_login_at=$2 WHERE google_sub=$3 AND role=$4', [g.email, now(), g.sub, role]);
+  res.json({ token: session(role, id.phone), user: role === 'owner' ? await ownerOut(id.phone) : await agentOut(id.phone) });
 });
 
-app.post('/api/auth/otp/verify', limiter(15 * 60_000, 30), async (req, res) => {
-  const { role, phone, code } = z.object({ role: z.enum(['owner', 'agent']), phone: z.string().regex(PHONE), code: z.string().regex(/^\d{6}$/) }).parse(req.body);
+/** First time only: send the WhatsApp OTP to the number the person typed. */
+app.post('/api/auth/phone/request', limiter(15 * 60_000, 20), signupCtx,
+  rateLimit({ windowMs: 15 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: req => 'g:' + req.signup.sub, message: { error: 'Too many OTP requests. Try again in a few minutes.' } }),
+  async (req, res) => {
+    const { phone } = z.object({ phone: z.string().regex(PHONE) }).parse(req.body);
+    const { role } = req.signup;
+    if (await one('SELECT 1 FROM identities WHERE role=$1 AND phone=$2 AND google_sub<>$3', [role, phone, req.signup.sub]))
+      throw httpError(409, 'This mobile number is already linked to another Google account.');
+    const prev = await one('SELECT sent_at FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
+    if (prev && now() - prev.sent_at < 30_000) throw httpError(429, 'Please wait 30 seconds before requesting another OTP');
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    await q(`INSERT INTO otps (phone, role, code_hash, expires_at, tries, sent_at) VALUES ($1,$2,$3,$4,0,$5)
+             ON CONFLICT (phone, role) DO UPDATE SET code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at, tries=0, sent_at=EXCLUDED.sent_at`,
+      [phone, role, hashOtp(role, phone, code), now() + 5 * 60_000, now()]);
+    try {
+      await sendWhatsAppOtp(phone, code);
+    } catch (e) {
+      console.error('WhatsApp OTP failed:', e.message);
+      await q('DELETE FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
+      throw httpError(502, 'We could not send the OTP on WhatsApp right now. Check the number has WhatsApp and try again.');
+    }
+    res.json({ ok: true });
+  });
+
+/** First time only: check the OTP, link Google account <-> mobile number, and log in. */
+app.post('/api/auth/phone/verify', limiter(15 * 60_000, 30), signupCtx, async (req, res) => {
+  const { phone, code } = z.object({ phone: z.string().regex(PHONE), code: z.string().regex(/^\d{6}$/) }).parse(req.body);
+  const { role, sub, email, name } = req.signup;
   const row = await one('SELECT * FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
   if (!row) throw httpError(400, 'Request a new OTP');
   if (now() > row.expires_at) throw httpError(400, 'This OTP has expired. Request a new one.');
@@ -113,9 +168,19 @@ app.post('/api/auth/otp/verify', limiter(15 * 60_000, 30), async (req, res) => {
   const a = Buffer.from(hashOtp(role, phone, code)), b = Buffer.from(row.code_hash);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw httpError(400, 'That OTP is incorrect');
   await q('DELETE FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
-  if (role === 'owner') await q('INSERT INTO owners (phone, created_at) VALUES ($1,$2) ON CONFLICT DO NOTHING', [phone, now()]);
-  else await q('INSERT INTO agents (phone, created_at) VALUES ($1,$2) ON CONFLICT DO NOTHING', [phone, now()]);
-  res.json({ token: sign({ role, phone }, '14d'), user: role === 'owner' ? await ownerOut(phone) : await agentOut(phone) });
+
+  try {
+    await tx(async c => {
+      await c.query('INSERT INTO identities (google_sub, role, email, phone, created_at, last_login_at) VALUES ($1,$2,$3,$4,$5,$5)', [sub, role, email, phone, now()]);
+      // The account row may already exist (people who used the old mobile-number login keep their listings / KYC).
+      if (role === 'owner') await c.query("INSERT INTO owners (phone, name, email, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (phone) DO UPDATE SET email = CASE WHEN owners.email='' THEN EXCLUDED.email ELSE owners.email END", [phone, name.slice(0, 60), email, now()]);
+      else await c.query('INSERT INTO agents (phone, name, email, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (phone) DO UPDATE SET email = COALESCE(NULLIF(agents.email, \'\'), EXCLUDED.email)', [phone, name.slice(0, 80) || null, email, now()]);
+    });
+  } catch (e) {
+    if (e.code === '23505') throw httpError(409, 'This Google account or mobile number is already linked. Sign in with Google again.');
+    throw e;
+  }
+  res.json({ token: session(role, phone), user: role === 'owner' ? await ownerOut(phone) : await agentOut(phone) });
 });
 
 app.post('/api/auth/admin/login', limiter(15 * 60_000, 10), async (req, res) => {
@@ -443,7 +508,6 @@ app.post('/api/admin/agents/:phone/approve', admin, async (req, res) => {
   const a = await agentFor(req);
   if (!a.status.startsWith('pending')) throw httpError(409, 'This agent has no pending application');
   await q("UPDATE agents SET status='approved', approved_at=$1, note='' WHERE phone=$2", [now(), a.phone]);
-  sendSms(a.phone, 'Brokeo: your agent account is approved. You can now view listings.').catch(e => console.error('sms failed', e.message));
   res.json(await agentOut(a.phone));
 });
 
@@ -452,7 +516,6 @@ app.post('/api/admin/agents/:phone/reject', admin, async (req, res) => {
   const { note } = z.object({ note: str(5, 400) }).parse(req.body);
   if (!a.status.startsWith('pending')) throw httpError(409, 'This agent has no pending application');
   await q("UPDATE agents SET status='rejected', note=$1 WHERE phone=$2", [note, a.phone]);
-  sendSms(a.phone, 'Brokeo: your agent application needs changes. Log in to see the reason.').catch(e => console.error('sms failed', e.message));
   res.json(await agentOut(a.phone));
 });
 

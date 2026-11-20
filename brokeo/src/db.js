@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS otps (
   PRIMARY KEY (phone, role)
 );
 
+-- Google accounts. A Google account is linked to ONE verified mobile number per role, once.
+-- After that first WhatsApp verification, Google sign-in alone is enough.
+CREATE TABLE IF NOT EXISTS identities (
+  google_sub TEXT NOT NULL,
+  role TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  last_login_at BIGINT,
+  PRIMARY KEY (google_sub, role),
+  UNIQUE (role, phone)
+);
+
 -- Uploaded images. kind 'photo' = listing photo (public by unguessable id), 'kyc' = agent document (admin only).
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,
