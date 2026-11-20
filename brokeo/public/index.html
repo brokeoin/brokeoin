@@ -475,7 +475,7 @@ body{padding-bottom:env(safe-area-inset-bottom,0px)}
 <script>
 /* =====================================================================
    BROKEO — frontend. All data lives on the server (see /api); the browser only
-   keeps the login token. OTPs are sent by SMS and verified on the server.
+   keeps the login token. Login is Google sign-in; new accounts verify a mobile number once with a WhatsApp OTP (checked on the server).
    ===================================================================== */
 const SES_KEY='brokeo_session_v2';
 const TYPES=['Apartment / Flat','Independent House','Villa','Plot / Land','Commercial Space','Farm Land'];
@@ -702,7 +702,7 @@ function renderNav(){
   const label={owner:'My dashboard',agent:'My dashboard',admin:'Verification desk'}[session.role];
   r.innerHTML=`<a href="#${session.role}" class="nav-btn hide-sm">${label}</a><button class="nav-btn solid" onclick="logout()">Log out</button>`;
 }
-function logout(){setSession(null);D={me:null,props:[],leads:[],agents:[]};Object.assign(state,{ownerTab:'listings',agentTab:'browse',editId:null,kycEdit:false});toast('Logged out');go('home')}
+function logout(){try{google.accounts.id.disableAutoSelect()}catch(e){}setSession(null);D={me:null,props:[],leads:[],agents:[]};Object.assign(state,{ownerTab:'listings',agentTab:'browse',editId:null,kycEdit:false});toast('Logged out');go('home')}
 
 /* =====================================================================
    HOME
@@ -790,7 +790,7 @@ function home(){
     <div class="sec-head"><h2>One platform for both sides of the deal</h2><p>Owners and agents each get their own login and their own view of Brokeo.</p></div>
     <div class="portals">
       <div class="portal o"><div class="pi">${ic('home')}</div><h3>For property owners</h3><p class="d">Sell through trusted agents without putting your home on a public portal.</p>
-        <ul><li>${ic('check')}<span>Log in with your mobile number and an OTP</span></li><li>${ic('check')}<span>List with photos and the exact location of the property</span></li><li>${ic('check')}<span>Set your price and the commission you'll pay</span></li><li>${ic('check')}<span>See which verified agent has a buyer</span></li><li>${ic('check')}<span>Other owners can never see your listing</span></li></ul>
+        <ul><li>${ic('check')}<span>Log in with Google; verify your mobile number once on WhatsApp</span></li><li>${ic('check')}<span>List with photos and the exact location of the property</span></li><li>${ic('check')}<span>Set your price and the commission you'll pay</span></li><li>${ic('check')}<span>See which verified agent has a buyer</span></li><li>${ic('check')}<span>Other owners can never see your listing</span></li></ul>
         <a class="btn btn-o" href="#owner-login">Log in as owner ${ic('arrow')}</a></div>
       <div class="portal t grain"><div class="pi">${ic('users')}</div><h3>For realtors and agents</h3><p class="d">Find sellers who have already agreed on a commission.</p>
         <ul><li>${ic('check')}<span>Complete KYC with PAN and Aadhaar</span></li><li>${ic('check')}<span>Upload your RERA certificate, or have your office inspected</span></li><li>${ic('check')}<span>Browse owner listings once you're approved</span></li><li>${ic('check')}<span>Unlock the owner's number when you have a buyer</span></li><li>${ic('check')}<span>Close the deal and earn the quoted commission</span></li></ul>
@@ -816,9 +816,17 @@ function home(){
 }
 
 /* =====================================================================
-   LOGIN (mobile number + OTP)
+   LOGIN (Google sign-in; first time only: mobile number verified by a WhatsApp OTP)
    ===================================================================== */
-let otpTimer=null;
+let otpTimer=null,gisPromise=null,appCfg=null;
+function loadGis(){
+  return gisPromise??=new Promise((ok,no)=>{
+    const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;
+    s.onload=ok;s.onerror=()=>{gisPromise=null;no(new Error('Could not load Google sign-in. Check your internet connection.'))};
+    document.head.appendChild(s);
+  });
+}
+async function getCfg(){return appCfg??=await fetch('/api/config').then(r=>r.json()).catch(()=>{appCfg=null;return{}})}
 function loginView(role){
   const isO=role==='owner';
   const side=isO
@@ -828,29 +836,55 @@ function loginView(role){
   <section class="auth ${role}"><div class="auth-card">
     <div class="auth-side grain"><div class="logo">BROKE<span class="o">O</span>.</div><h2>${side.h}</h2><p>${side.p}</p><ul>${side.li.map(t=>`<li>${ic('check')}<span>${t}</span></li>`).join('')}</ul></div>
     <div class="auth-main">
-      <h3>Log in</h3><p class="sub">${isO?'Enter your mobile number and we\'ll send you a one-time password.':'Enter your mobile number. New agents complete KYC right after logging in.'}</p>
+      <h3>Log in</h3><p class="sub" id="auth-sub"></p>
       <div id="auth-step"></div>
       <div class="auth-switch">${isO?'Are you an agent? <a href="#agent-login">Go to the agent portal</a>':'Selling a property? <a href="#owner-login">Go to the owner portal</a>'}</div>
     </div>
   </div></section>`;
-  phoneStep(role);
+  googleStep(role);
 }
-function phoneStep(role){
+/* Step 1: Google button */
+async function googleStep(role){
   clearInterval(otpTimer);
-  $('#auth-step').innerHTML=`<label class="lbl" for="ph">Mobile number</label>
+  const isO=role==='owner';
+  $('#auth-sub').textContent=isO?'Continue with your Google account. The first time, we also verify your mobile number on WhatsApp.':'Continue with your Google account. New agents verify their mobile number once and then complete KYC.';
+  $('#auth-step').innerHTML=`<div id="g-btn" style="min-height:44px"></div><p class="otp-info" id="g-msg" style="margin-top:14px"></p>`;
+  try{
+    const cfg=await getCfg();
+    if(!cfg.googleClientId){$('#g-msg').textContent='Google login is not set up yet. Please try again later.';return}
+    await loadGis();
+    if(!$('#g-btn'))return;   // the person left this screen while Google was loading
+    google.accounts.id.initialize({client_id:cfg.googleClientId,callback:r=>onGoogle(role,r.credential),auto_select:false,cancel_on_tap_outside:true});
+    google.accounts.id.renderButton($('#g-btn'),{theme:'outline',size:'large',shape:'pill',text:'continue_with',logo_alignment:'left',width:Math.min(340,($('#g-btn').parentElement.clientWidth||340))});
+  }catch(e){const m=$('#g-msg');if(m)m.textContent=e.message}
+}
+async function onGoogle(role,credential){
+  try{
+    const r=await api('POST','/auth/google',{role,credential});
+    if(r.token){setSession({role,phone:r.user.phone,token:r.token});D.me=r.user;toast('Logged in','success');return go(role)}
+    phoneStep(role,r);   // new Google account: verify a mobile number once
+  }catch(e){fail(e)}
+}
+/* Step 2 (first time only): mobile number */
+function phoneStep(role,ctx){
+  clearInterval(otpTimer);
+  $('#auth-sub').textContent='One last step. Verify your mobile number once; next time Google sign-in is enough.';
+  $('#auth-step').innerHTML=`<p class="otp-info" style="margin-bottom:16px">Signed in as <b>${esc(ctx.email)}</b>. <button class="link" id="other">Use another account</button></p>
+    <label class="lbl" for="ph">WhatsApp mobile number</label>
     <div class="phone-in"><span>+91</span><input id="ph" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" autocomplete="tel"></div>
-    <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="send">Send OTP</button>`;
+    <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="send">Send OTP on WhatsApp</button>`;
   const ph=$('#ph');ph.focus();
   ph.oninput=()=>ph.value=ph.value.replace(/\D/g,'').slice(0,10);
   ph.onkeydown=e=>{if(e.key==='Enter')$('#send').click()};
-  $('#send').onclick=async()=>{if(!PHONE.test(ph.value))return toast('Enter a valid 10-digit Indian mobile number','error');const b=$('#send');b.disabled=true;const ok=await sendOtp(role,ph.value);b.disabled=false;if(ok)otpStep(role,ph.value)};
+  $('#other').onclick=()=>{try{google.accounts.id.disableAutoSelect()}catch(e){}googleStep(role)};
+  $('#send').onclick=async()=>{if(!PHONE.test(ph.value))return toast('Enter a valid 10-digit Indian mobile number','error');const b=$('#send');b.disabled=true;const ok=await sendOtp(role,ctx,ph.value);b.disabled=false;if(ok)otpStep(role,ctx,ph.value)};
 }
-async function sendOtp(role,phone){
-  try{await api('POST','/auth/otp/request',{role,phone});toast(`OTP sent by SMS to <b>${fmtPh(phone)}</b>`,'success');return true}
-  catch(e){fail(e);return false}
+async function sendOtp(role,ctx,phone){
+  try{await api('POST','/auth/phone/request',{signupToken:ctx.signupToken,phone});toast(`OTP sent on WhatsApp to <b>${fmtPh(phone)}</b>`,'success');return true}
+  catch(e){if(e.status===401){fail(e);googleStep(role)}else fail(e);return false}
 }
-function otpStep(role,phone){
-  $('#auth-step').innerHTML=`<p class="otp-info">Enter the 6-digit OTP sent to <b>${fmtPh(phone)}</b>. <button class="link" id="chg">Change number</button></p>
+function otpStep(role,ctx,phone){
+  $('#auth-step').innerHTML=`<p class="otp-info">Enter the 6-digit OTP we sent on WhatsApp to <b>${fmtPh(phone)}</b>. <button class="link" id="chg">Change number</button></p>
     <div class="otp-boxes">${'<input maxlength="1" inputmode="numeric" autocomplete="one-time-code">'.repeat(6)}</div>
     <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="verify">Verify and log in</button>
     <p class="resend">Didn't get it? <button class="link" id="resend" disabled>Resend in <span id="cd">30</span>s</button></p>`;
@@ -860,18 +894,20 @@ function otpStep(role,phone){
     b.onkeydown=e=>{if(e.key==='Backspace'&&!b.value&&i>0)boxes[i-1].focus();if(e.key==='Enter')$('#verify').click()};
     b.onpaste=e=>{const d=(e.clipboardData.getData('text')||'').replace(/\D/g,'').slice(0,6);if(!d)return;e.preventDefault();d.split('').forEach((c,j)=>boxes[j].value=c);boxes[Math.min(d.length,5)].focus();if(d.length===6)$('#verify').click()};
   });
-  $('#chg').onclick=()=>phoneStep(role);
+  $('#chg').onclick=()=>phoneStep(role,ctx);
   let s=30;clearInterval(otpTimer);
   otpTimer=setInterval(()=>{const cd=$('#cd');if(!cd)return clearInterval(otpTimer);if(--s<=0){clearInterval(otpTimer);const r=$('#resend');r.disabled=false;r.textContent='Resend OTP'}else cd.textContent=s},1000);
-  $('#resend').onclick=async()=>{if(await sendOtp(role,phone))otpStep(role,phone)};
+  $('#resend').onclick=async()=>{if(await sendOtp(role,ctx,phone))otpStep(role,ctx,phone)};
   $('#verify').onclick=async()=>{
     const code=boxes.map(b=>b.value).join('');
     if(code.length<6)return toast('Enter all 6 digits','error');
     const vb=$('#verify');if(vb.disabled)return;vb.disabled=true;
     try{
-      const r=await api('POST','/auth/otp/verify',{role,phone,code});
-      clearInterval(otpTimer);setSession({role,phone,token:r.token});D.me=r.user;toast('Logged in','success');go(role);
-    }catch(e){vb.disabled=false;boxes.forEach(b=>b.value='');boxes[0].focus();fail(e)}
+      const r=await api('POST','/auth/phone/verify',{signupToken:ctx.signupToken,phone,code});
+      clearInterval(otpTimer);setSession({role,phone:r.user.phone,token:r.token});D.me=r.user;toast('Logged in','success');go(role);
+    }catch(e){
+      if(e.status===401){fail(e);return googleStep(role)}
+      vb.disabled=false;boxes.forEach(b=>b.value='');boxes[0].focus();fail(e)}
   };
 }
 
