@@ -175,6 +175,13 @@ svg.i{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-widt
 .band p{color:rgba(255,255,255,.84);max-width:560px}
 
 /* ---------- footer ---------- */
+.legal{max-width:780px;margin:0 auto;padding:56px 24px 80px}
+.legal h1{font-size:clamp(32px,4vw,46px);margin-bottom:6px}
+.legal .upd{color:var(--muted);font-size:14.5px;margin-bottom:34px}
+.legal h2{font-size:22px;margin:34px 0 10px}
+.legal p,.legal li{font-size:15.5px;line-height:1.7;color:#2D384F}
+.legal ul{margin:8px 0 8px 22px;display:grid;gap:6px}
+.legal a{color:var(--violet-2);font-weight:600}
 .foot{background:var(--night);color:#8A8D93;padding:40px 0;font-size:14px}
 .foot .wrap{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
 .foot .logo{font-size:21px}
@@ -463,7 +470,7 @@ body{padding-bottom:env(safe-area-inset-bottom,0px)}
 <footer class="foot"><div class="wrap">
   <a href="#home" class="logo">BROKE<span class="o">O</span>.</a>
   <span>© 2026 Brokeo. Owners list, verified agents sell.</span>
-  <nav><a href="#owner-login">Owner portal</a><a href="#agent-login">Agent portal</a><a href="#admin">Admin</a></nav>
+  <nav><a href="#owner-login">Owner portal</a><a href="#agent-login">Agent portal</a><a href="#privacy">Privacy policy</a><a href="#admin">Admin</a></nav>
 </div></footer>
 
 <div class="modal" id="modal"><div class="modal-panel" id="modal-panel">
@@ -682,7 +689,7 @@ function wireLocation(k,cur,label,onSet){
 }
 
 /* ---------- router ---------- */
-const routes={'home':home,'owner-login':()=>loginView('owner'),'agent-login':()=>loginView('agent'),'owner':ownerDash,'agent':agentDash,'admin':adminView};
+const routes={'home':home,'owner-login':()=>loginView('owner'),'agent-login':()=>loginView('agent'),'owner':ownerDash,'agent':agentDash,'admin':adminView,'privacy':privacyView};
 function go(p){if(location.hash==='#'+p)render();else location.hash='#'+p}
 function renderNow(){
   closeModal();
@@ -909,6 +916,73 @@ function otpStep(role,ctx,phone){
       if(e.status===401){fail(e);return googleStep(role)}
       vb.disabled=false;boxes.forEach(b=>b.value='');boxes[0].focus();fail(e)}
   };
+}
+
+/* =====================================================================
+   PRIVACY POLICY (public page: https://brokeo.in/#privacy)
+   ===================================================================== */
+function privacyView(){
+  const MAIL='ceo@brokeo.in';
+  $('#app').innerHTML=`<article class="legal">
+  <h1>Privacy Policy</h1>
+  <p class="upd">Effective 20 November 2026</p>
+
+  <p>Brokeo ("we", "us") runs a website at brokeo.in where property owners list their properties and verified agents find buyers for them. This policy explains what personal data we collect, why, who we share it with, and the choices you have. We follow India's Digital Personal Data Protection Act, 2023.</p>
+
+  <h2>1. What we collect</h2>
+  <ul>
+    <li><b>Google account details:</b> your name, email address and Google account ID, when you choose "Continue with Google". We never see your Google password.</li>
+    <li><b>Mobile number:</b> the number you verify with a one-time password (OTP) sent on WhatsApp the first time you sign in.</li>
+    <li><b>Owners:</b> property details you enter (title, type, size, price, commission, address, map location, description, photos) and the contact name, phone, alternate phone, email and preferred contact time you add to a listing.</li>
+    <li><b>Agents:</b> name, agency, city, email, PAN, the last four digits of your Aadhaar (we never store the full number), RERA details, office name, address and map location, inspection slot, and images of your PAN card, Aadhaar, RERA certificate and office, which you upload for verification.</li>
+    <li><b>Activity:</b> leads an agent sends on a listing, listings marked sold, and admin decisions on agent applications.</li>
+    <li><b>Technical data:</b> IP address and basic request logs, used to keep the service secure and to limit abuse. We use a login token stored in your browser to keep you signed in. We do not use advertising cookies.</li>
+  </ul>
+
+  <h2>2. Why we use it</h2>
+  <ul>
+    <li>To create your account and sign you in, and to confirm that your mobile number is yours.</li>
+    <li>To show owners' listings to approved agents, and to let agents contact owners about buyers.</li>
+    <li>To verify agents (KYC) before they can see listings.</li>
+    <li>To prevent fraud, spam and misuse, and to keep Brokeo secure.</li>
+    <li>To reply to your questions and handle complaints.</li>
+  </ul>
+  <p>We process your data on the basis of your consent, which you give when you sign in and submit information, and where the law allows, to meet legal obligations. We do not sell your personal data.</p>
+
+  <h2>3. Who can see your data</h2>
+  <ul>
+    <li><b>Owners' listings and contact details</b> are visible only to agents who have been approved by our team. Other owners cannot see your listing. Listing photos are served from unguessable links.</li>
+    <li><b>Agent KYC documents</b> are visible only to our verification team.</li>
+    <li><b>An owner sees</b> an agent's name, agency, city, RERA number, office name and phone when that agent submits a lead on the owner's listing.</li>
+  </ul>
+
+  <h2>4. Service providers we use</h2>
+  <p>We share data only with providers needed to run Brokeo, and only for that purpose:</p>
+  <ul>
+    <li><b>Google</b> for sign-in.</li>
+    <li><b>Meta (WhatsApp Business Platform)</b> to deliver OTP messages to your mobile number.</li>
+    <li><b>Neon</b> for our database (including uploaded photos and documents).</li>
+  </ul>
+  <p>These providers may process data on servers outside India. We may also disclose data if required by law or a court order.</p>
+
+  <h2>5. How long we keep it</h2>
+  <p>We keep your account data while your account is active. Listings you delete are removed from the website. Sold-listing records and leads may be kept for a limited period for dispute handling. OTPs expire after 5 minutes and are stored only as a one-way hash. We delete or anonymise your data when you ask us to delete your account, unless the law requires us to keep it.</p>
+
+  <h2>6. How we protect it</h2>
+  <p>We use HTTPS, signed login tokens, role-based access (owners, agents and our admin team see different things), hashed OTPs, and rate limits on sign-in. KYC documents are never public and can be opened only by a logged-in admin. No online service is completely secure, so please keep your Google account safe and never share an OTP.</p>
+
+  <h2>7. Your rights</h2>
+  <p>You can ask us to access, correct or delete your personal data, to withdraw your consent, and to nominate someone to exercise these rights for you. Withdrawing consent or deleting your data means we can no longer provide the service to you. Write to us at <a href="mailto:${MAIL}">${MAIL}</a> and we will respond within a reasonable time. If you are not satisfied, you may complain to the Data Protection Board of India.</p>
+
+  <h2>8. Children</h2>
+  <p>Brokeo is for adults aged 18 and over. We do not knowingly collect data from children.</p>
+
+  <h2>9. Changes to this policy</h2>
+  <p>If we change this policy we will update the date above, and we will tell you on the website if the change is significant.</p>
+
+  <h2>10. Contact and grievances</h2>
+  <p>Brokeo<br>Email: <a href="mailto:${MAIL}">${MAIL}</a></p>
+</article>`;
 }
 
 /* =====================================================================
