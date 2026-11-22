@@ -482,7 +482,7 @@ body{padding-bottom:env(safe-area-inset-bottom,0px)}
 <script>
 /* =====================================================================
    BROKEO — frontend. All data lives on the server (see /api); the browser only
-   keeps the login token. Login is Google sign-in; new accounts verify a mobile number once with a WhatsApp OTP (checked on the server).
+   keeps the login token. Login is Google sign-in; new accounts verify a mobile number once with an OTP (checked on the server).
    ===================================================================== */
 const SES_KEY='brokeo_session_v2';
 const TYPES=['Apartment / Flat','Independent House','Villa','Plot / Land','Commercial Space','Farm Land'];
@@ -797,7 +797,7 @@ function home(){
     <div class="sec-head"><h2>One platform for both sides of the deal</h2><p>Owners and agents each get their own login and their own view of Brokeo.</p></div>
     <div class="portals">
       <div class="portal o"><div class="pi">${ic('home')}</div><h3>For property owners</h3><p class="d">Sell through trusted agents without putting your home on a public portal.</p>
-        <ul><li>${ic('check')}<span>Log in with Google; verify your mobile number once on WhatsApp</span></li><li>${ic('check')}<span>List with photos and the exact location of the property</span></li><li>${ic('check')}<span>Set your price and the commission you'll pay</span></li><li>${ic('check')}<span>See which verified agent has a buyer</span></li><li>${ic('check')}<span>Other owners can never see your listing</span></li></ul>
+        <ul><li>${ic('check')}<span>Log in with Google; verify your mobile number once with an OTP</span></li><li>${ic('check')}<span>List with photos and the exact location of the property</span></li><li>${ic('check')}<span>Set your price and the commission you'll pay</span></li><li>${ic('check')}<span>See which verified agent has a buyer</span></li><li>${ic('check')}<span>Other owners can never see your listing</span></li></ul>
         <a class="btn btn-o" href="#owner-login">Log in as owner ${ic('arrow')}</a></div>
       <div class="portal t grain"><div class="pi">${ic('users')}</div><h3>For realtors and agents</h3><p class="d">Find sellers who have already agreed on a commission.</p>
         <ul><li>${ic('check')}<span>Complete KYC with PAN and Aadhaar</span></li><li>${ic('check')}<span>Upload your RERA certificate, or have your office inspected</span></li><li>${ic('check')}<span>Browse owner listings once you're approved</span></li><li>${ic('check')}<span>Unlock the owner's number when you have a buyer</span></li><li>${ic('check')}<span>Close the deal and earn the quoted commission</span></li></ul>
@@ -823,7 +823,7 @@ function home(){
 }
 
 /* =====================================================================
-   LOGIN (Google sign-in; first time only: mobile number verified by a WhatsApp OTP)
+   LOGIN (Google sign-in; first time only: mobile number verified by an OTP)
    ===================================================================== */
 let otpTimer=null,gisPromise=null,appCfg=null;
 function loadGis(){
@@ -854,7 +854,7 @@ function loginView(role){
 async function googleStep(role){
   clearInterval(otpTimer);
   const isO=role==='owner';
-  $('#auth-sub').textContent=isO?'Continue with your Google account. The first time, we also verify your mobile number on WhatsApp.':'Continue with your Google account. New agents verify their mobile number once and then complete KYC.';
+  $('#auth-sub').textContent=isO?'Continue with your Google account. The first time, we also verify your mobile number with an OTP.':'Continue with your Google account. New agents verify their mobile number once and then complete KYC.';
   $('#auth-step').innerHTML=`<div id="g-btn" style="min-height:44px"></div><p class="otp-info" id="g-msg" style="margin-top:14px"></p>`;
   try{
     const cfg=await getCfg();
@@ -877,9 +877,9 @@ function phoneStep(role,ctx){
   clearInterval(otpTimer);
   $('#auth-sub').textContent='One last step. Verify your mobile number once; next time Google sign-in is enough.';
   $('#auth-step').innerHTML=`<p class="otp-info" style="margin-bottom:16px">Signed in as <b>${esc(ctx.email)}</b>. <button class="link" id="other">Use another account</button></p>
-    <label class="lbl" for="ph">WhatsApp mobile number</label>
+    <label class="lbl" for="ph">Mobile number</label>
     <div class="phone-in"><span>+91</span><input id="ph" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" autocomplete="tel"></div>
-    <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="send">Send OTP on WhatsApp</button>`;
+    <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="send">Send OTP</button>`;
   const ph=$('#ph');ph.focus();
   ph.oninput=()=>ph.value=ph.value.replace(/\D/g,'').slice(0,10);
   ph.onkeydown=e=>{if(e.key==='Enter')$('#send').click()};
@@ -887,11 +887,11 @@ function phoneStep(role,ctx){
   $('#send').onclick=async()=>{if(!PHONE.test(ph.value))return toast('Enter a valid 10-digit Indian mobile number','error');const b=$('#send');b.disabled=true;const ok=await sendOtp(role,ctx,ph.value);b.disabled=false;if(ok)otpStep(role,ctx,ph.value)};
 }
 async function sendOtp(role,ctx,phone){
-  try{await api('POST','/auth/phone/request',{signupToken:ctx.signupToken,phone});toast(`OTP sent on WhatsApp to <b>${fmtPh(phone)}</b>`,'success');return true}
+  try{await api('POST','/auth/phone/request',{signupToken:ctx.signupToken,phone});toast(`OTP sent to <b>${fmtPh(phone)}</b>`,'success');return true}
   catch(e){if(e.status===401){fail(e);googleStep(role)}else fail(e);return false}
 }
 function otpStep(role,ctx,phone){
-  $('#auth-step').innerHTML=`<p class="otp-info">Enter the 6-digit OTP we sent on WhatsApp to <b>${fmtPh(phone)}</b>. <button class="link" id="chg">Change number</button></p>
+  $('#auth-step').innerHTML=`<p class="otp-info">Enter the 6-digit OTP we sent to <b>${fmtPh(phone)}</b>. <button class="link" id="chg">Change number</button></p>
     <div class="otp-boxes">${'<input maxlength="1" inputmode="numeric" autocomplete="one-time-code">'.repeat(6)}</div>
     <button class="btn ${role==='owner'?'btn-o':'btn-t'} block lg" id="verify">Verify and log in</button>
     <p class="resend">Didn't get it? <button class="link" id="resend" disabled>Resend in <span id="cd">30</span>s</button></p>`;
@@ -932,7 +932,7 @@ function privacyView(){
   <h2>1. What we collect</h2>
   <ul>
     <li><b>Google account details:</b> your name, email address and Google account ID, when you choose "Continue with Google". We never see your Google password.</li>
-    <li><b>Mobile number:</b> the number you verify with a one-time password (OTP) sent on WhatsApp the first time you sign in.</li>
+    <li><b>Mobile number:</b> the number you verify with a one-time password (OTP) sent by WhatsApp or SMS the first time you sign in.</li>
     <li><b>Owners:</b> property details you enter (title, type, size, price, commission, address, map location, description, photos) and the contact name, phone, alternate phone, email and preferred contact time you add to a listing.</li>
     <li><b>Agents:</b> name, agency, city, email, PAN, the last four digits of your Aadhaar (we never store the full number), RERA details, office name, address and map location, inspection slot, and images of your PAN card, Aadhaar, RERA certificate and office, which you upload for verification.</li>
     <li><b>Activity:</b> leads an agent sends on a listing, listings marked sold, and admin decisions on agent applications.</li>
@@ -960,7 +960,7 @@ function privacyView(){
   <p>We share data only with providers needed to run Brokeo, and only for that purpose:</p>
   <ul>
     <li><b>Google</b> for sign-in.</li>
-    <li><b>Meta (WhatsApp Business Platform)</b> to deliver OTP messages to your mobile number.</li>
+    <li><b>Fast2SMS</b> to deliver OTP messages to your mobile number.</li>
     <li><b>Neon</b> for our database (including uploaded photos and documents).</li>
   </ul>
   <p>These providers may process data on servers outside India. We may also disclose data if required by law or a court order.</p>
