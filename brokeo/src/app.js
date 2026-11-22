@@ -12,7 +12,7 @@ import { z, ZodError } from 'zod';
 import { q, one, scalar, tx, ensureSchema } from './db.js';
 import { saveDataUrl, removeFile, isDataUrl, httpError } from './files.js';
 import { OAuth2Client } from 'google-auth-library';
-import { sendWhatsAppOtp, otpChannel } from './whatsapp.js';
+import { sendOtp, otpChannel } from './otp.js';
 
 /* ------------------------------ config ------------------------------ */
 const PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
@@ -22,7 +22,7 @@ const ADMIN_HASH = process.env.ADMIN_PASSWORD_HASH || '';
 if (PROD && !ADMIN_HASH) console.error('WARNING: ADMIN_PASSWORD_HASH is not set, so nobody can log in to the verification desk.');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 if (PROD && !GOOGLE_CLIENT_ID) console.error('WARNING: GOOGLE_CLIENT_ID is not set, so nobody can log in with Google.');
-if (PROD && otpChannel() === 'console') console.error('WARNING: OTP_CHANNEL is "console": OTPs are only written to the server log and nothing is sent on WhatsApp. Set OTP_CHANNEL=whatsapp for real users.');
+if (PROD && otpChannel() === 'console') console.error('WARNING: OTP_CHANNEL is "console": OTPs are only written to the server log and nothing is sent to users. Set OTP_CHANNEL=fast2sms (or whatsapp).');
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 const PHONE = /^[6-9]\d{9}$/;
@@ -121,7 +121,7 @@ function signupCtx(req, _res, next) {
 /**
  * Google sign-in.
  *  - Known Google account  -> logged in straight away (no mobile OTP).
- *  - New Google account    -> { needsPhone: true }: the person must verify a mobile number once on WhatsApp.
+ *  - New Google account    -> { needsPhone: true }: the person must verify a mobile number once with an OTP.
  */
 app.post('/api/auth/google', limiter(15 * 60_000, 40), async (req, res) => {
   const { role, credential } = z.object({ role: z.enum(['owner', 'agent']), credential: z.string().min(20).max(4000) }).parse(req.body);
@@ -132,7 +132,7 @@ app.post('/api/auth/google', limiter(15 * 60_000, 40), async (req, res) => {
   res.json({ token: session(role, id.phone), user: role === 'owner' ? await ownerOut(id.phone) : await agentOut(id.phone) });
 });
 
-/** First time only: send the WhatsApp OTP to the number the person typed. */
+/** First time only: send the OTP (SMS or WhatsApp, see OTP_CHANNEL) to the number the person typed. */
 app.post('/api/auth/phone/request', limiter(15 * 60_000, 20), signupCtx,
   rateLimit({ windowMs: 15 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: req => 'g:' + req.signup.sub, message: { error: 'Too many OTP requests. Try again in a few minutes.' } }),
   async (req, res) => {
@@ -147,11 +147,11 @@ app.post('/api/auth/phone/request', limiter(15 * 60_000, 20), signupCtx,
              ON CONFLICT (phone, role) DO UPDATE SET code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at, tries=0, sent_at=EXCLUDED.sent_at`,
       [phone, role, hashOtp(role, phone, code), now() + 5 * 60_000, now()]);
     try {
-      await sendWhatsAppOtp(phone, code);
+      await sendOtp(phone, code);
     } catch (e) {
-      console.error('WhatsApp OTP failed:', e.message);
+      console.error('OTP delivery failed:', e.message);
       await q('DELETE FROM otps WHERE phone=$1 AND role=$2', [phone, role]);
-      throw httpError(502, 'We could not send the OTP on WhatsApp right now. Check the number has WhatsApp and try again.');
+      throw httpError(502, 'We could not send the OTP right now. Check the number and try again.');
     }
     res.json({ ok: true });
   });
