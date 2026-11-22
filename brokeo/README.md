@@ -3,7 +3,7 @@
 - `public/index.html` is the website. It talks to the API with `fetch('/api/...')` (same origin, no CORS).
 - `api/index.js` + `src/` is the Express API. On Vercel it runs as one serverless function.
 - Data is stored in **Postgres** (tables are created automatically on the first request). Listing photos and KYC documents are stored in the same database (`files` table), because Vercel has no persistent disk.
-- No OTP or admin password is shown on the website any more. OTPs are generated and checked on the server and sent by SMS.
+- No OTP or admin password is shown on the website any more. Login is **Google sign-in**. A new Google account verifies a mobile number **once** with an OTP sent by SMS (Fast2SMS) or WhatsApp (Meta Cloud API); after that, Google sign-in alone logs the person in. OTPs are generated and checked on the server.
 
 ## Deploy on Vercel
 
@@ -14,19 +14,42 @@
    |---|---|
    | `JWT_SECRET` | 48+ random characters: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
    | `ADMIN_PASSWORD_HASH` | output of `npm run hash-password -- "your admin password"` |
-   | `SMS_PROVIDER` | `twilio` |
-   | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | from your Twilio account |
+   | `GOOGLE_CLIENT_ID` | OAuth client ID (see *Google login* below) |
+   | `OTP_CHANNEL` | `fast2sms_smart` (WhatsApp first, SMS fallback), `fast2sms` (SMS) or `whatsapp` (Meta direct). `console` only for private testing |
+   | `FAST2SMS_OTP_ID` | for `fast2sms_smart`: the OTP ID of the template made in the Fast2SMS Smart OTP tab |
+   | `FAST2SMS_API_KEY` | Fast2SMS panel > Dev API > Authorization key |
+   | `FAST2SMS_ROUTE` | `otp` (default), `q` (Quick SMS) or `dlt` (needs `FAST2SMS_SENDER_ID` and `FAST2SMS_TEMPLATE_ID`) |
+   | `WHATSAPP_TOKEN` | permanent System User access token from Meta |
+   | `WHATSAPP_PHONE_NUMBER_ID` | the *Phone number ID* from WhatsApp > API Setup |
+   | `WHATSAPP_TEMPLATE_NAME` | name of your approved *Authentication* template |
+   | `WHATSAPP_TEMPLATE_LANG` | language the template was approved in, e.g. `en_US` |
 4. Deploy. Open `https://your-project.vercel.app` (owner/agent login) and `/#admin` (verification desk).
 
-### About SMS
-Real SMS needs a provider. For India, sender IDs and message templates must be DLT-registered; to use MSG91, Fast2SMS, etc., add a branch in `src/sms.js`.
-With `SMS_PROVIDER=console` nothing is sent: the OTP is only written to the server log (Vercel > Logs). Use that only for private testing.
+### Google login
+1. Google Cloud Console > APIs & Services > **OAuth consent screen**: set app name, support email, and publish the app (status *In production*) so anyone can sign in.
+2. **Credentials > Create credentials > OAuth client ID > Web application**.
+3. *Authorized JavaScript origins*: `https://brokeo.in`, `https://www.brokeo.in`, your `https://<project>.vercel.app` URL, and `http://localhost:3000` for local testing. No redirect URI is needed.
+4. Copy the client ID into `GOOGLE_CLIENT_ID`.
+
+### WhatsApp OTP (optional, Meta Cloud API, only if OTP_CHANNEL=whatsapp)
+1. developers.facebook.com > create an app (type *Business*) > add the **WhatsApp** product, and connect a Meta Business account.
+2. Add a business phone number (it cannot be one that is already registered on the normal WhatsApp app) and note its **Phone number ID**.
+3. WhatsApp Manager > Message templates > create a template with category **Authentication** (it comes with a *Copy code* button). Wait for approval, then put its name and language in the env vars.
+4. Business Settings > Users > **System users**: create one, assign the WhatsApp app, generate a token with `whatsapp_business_messaging` permission, never expiring. That is `WHATSAPP_TOKEN`.
+5. Complete business verification in Meta Business Suite and move the app to *Live* mode, otherwise messages only reach test numbers.
+
+### How login works
+- Google account already linked: Google sign-in logs in straight away.
+- New Google account: Google sign-in, then the person enters a mobile number, receives a 6-digit OTP, and the Google account is linked to that number permanently (table `identities`). Owners and agents are separate: one Google account can be linked once as owner and once as agent.
+- A mobile number can be linked to only one Google account per role.
+- People who used the old mobile-number login keep their data: they sign in with Google, verify the same number once, and are linked to the existing account.
+- Agent approval/rejection no longer sends a message; agents see their status when they log in.
 
 ## Run locally
 ```bash
 npm install
-cp .env.example .env     # fill in DATABASE_URL, JWT_SECRET, ADMIN_PASSWORD_HASH
-npm start                # http://localhost:3000 (OTP appears in this terminal)
+cp .env.example .env     # fill in DATABASE_URL, JWT_SECRET, ADMIN_PASSWORD_HASH, GOOGLE_CLIENT_ID
+npm start                # http://localhost:3000 (with OTP_CHANNEL=console the OTP appears in this terminal)
 ```
 
 ## Limits to know about
